@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="pt">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="theme-color" content="#0b0b14">
+<title>Pulso</title>
+<style>
+  html,body{margin:0;height:100%;background:#0b0b14;overflow:hidden;
+    touch-action:manipulation;user-select:none;-webkit-user-select:none;
+    -webkit-tap-highlight-color:transparent;
+    font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  canvas{display:block;width:100vw;height:100vh;cursor:pointer}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+"use strict";
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+let W, H, CX, CY, MAXR;
+function resize(){
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = innerWidth; H = innerHeight;
+  cv.width = W * dpr; cv.height = H * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  CX = W / 2; CY = H / 2 + 10;
+  MAXR = Math.max(80, Math.min(W * 0.42, (H - 240) / 2));
+}
+addEventListener('resize', resize); resize();
+
+/* ---------- Estado ---------- */
+let best = 0;
+try { best = +localStorage.getItem('pulso-best') || 0; } catch(e){}
+let muted = false;
+try { muted = localStorage.getItem('pulso-mute') === '1'; } catch(e){}
+
+let state = 'menu';            // menu | play | over
+let score = 0, hits = 0, streak = 0, newBest = false;
+let r = 0, dir = 1, speed = 0, target = 0, band = 0;
+let hue = 200, hueShown = 200;
+let overAt = 0, shake = 0, flash = 0, flashColor = '255,255,255';
+let scorePop = 0, failR = 0;
+let particles = [], ghosts = [], popups = [];
+
+/* ---------- Som ---------- */
+let ac = null;
+function tone(freq, dur = 0.14, type = 'sine', vol = 0.18, slideTo = null){
+  if (muted) return;
+  try {
+    ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+    const t = ac.currentTime, o = ac.createOscillator(), g = ac.createGain();
+    o.type = type; o.frequency.setValueAtTime(freq, t);
+    if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, t + dur);
+    g.gain.setValueAtTime(vol, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g).connect(ac.destination); o.start(t); o.stop(t + dur + 0.02);
+  } catch(e){}
+}
+const SCALE = [0, 2, 4, 7, 9, 12, 14, 16, 19, 21, 24];
+const note = i => 440 * Math.pow(2, (SCALE[Math.min(i, SCALE.length - 1)] - 9) / 12);
+
+/* ---------- Lógica ---------- */
+function newTarget(){
+  const lvl = hits;
+  band  = MAXR * Math.max(0.055, 0.19 - lvl * 0.0055);
+  speed = MAXR * Math.min(0.55 + lvl * 0.028, 1.55);   // px/s
+  dir   = (lvl >= 6 && Math.random() < 0.4) ? -1 : 1;  // a partir de 6, por vezes vem de fora
+  let lo = 0.30, hi = 0.92;
+  if (dir === -1) hi = 0.75;
+  target = MAXR * (lo + Math.random() * (hi - lo));
+  r = dir === 1 ? 0 : MAXR * 1.12;
+  hue = (200 + hits * 23) % 360;
+}
+
+function start(){
+  score = 0; hits = 0; streak = 0; newBest = false;
+  particles = []; ghosts = []; popups = [];
+  state = 'play';
+  newTarget();
+  tone(520, 0.1, 'triangle', 0.12);
+}
+
+function tap(){
+  if (state === 'menu') { start(); return; }
+  if (state === 'over') { if (performance.now() - overAt > 500) start(); return; }
+
+  const d = Math.abs(r - target);
+  if (d <= band / 2) {
+    const perfect = d <= band * 0.18;
+    hits++;
+    let pts;
+    if (perfect) {
+      streak++;
+      pts = 1 + Math.min(streak, 5);
+      popup(streak > 1 ? `PERFEITO x${streak}` : 'PERFEITO!', `+${pts}`, true);
+      flash = 0.35; flashColor = '255,255,255';
+      tone(note(Math.min(streak + 3, 10)), 0.22, 'triangle', 0.2);
+      setTimeout(() => tone(note(Math.min(streak + 5, 10)), 0.18, 'sine', 0.12), 60);
+      burst(r, 46, 1.4);
+    } else {
+      streak = 0;
+      pts = 1;
+      popup('', '+1', false);
+      tone(note(Math.min(Math.floor(hits / 3), 6)), 0.12, 'sine', 0.16);
+      burst(r, 22, 1);
+    }
+    score += pts;
+    scorePop = 1;
+    ghosts.push({ r, a: 1, hue, w: 4 });
+    if (navigator.vibrate) navigator.vibrate(perfect ? 15 : 8);
+    newTarget();
+  } else {
+    fail();
+  }
+}
+
+function fail(){
+  state = 'over'; overAt = performance.now();
+  failR = r; shake = 22; flash = 0.5; flashColor = '255,60,90';
+  tone(220, 0.45, 'sawtooth', 0.14, 55);
+  if (navigator.vibrate) navigator.vibrate([40, 40, 80]);
+  burstColor(r, 40, 0);
+  if (score > best) {
+    best = score; newBest = score > 0;
+    try { localStorage.setItem('pulso-best', best); } catch(e){}
+  }
+}
+
+function burst(rad, n, pow){
+  for (let i = 0; i < n; i++){
+    const a = Math.random() * Math.PI * 2;
+    const s = (60 + Math.random() * 220) * pow;
+    particles.push({ x: CX + Math.cos(a) * rad, y: CY + Math.sin(a) * rad,
+      vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: 1, h: hue + Math.random() * 40 - 20,
+      sz: 1.5 + Math.random() * 2.5 });
+  }
+}
+function burstColor(rad, n, h){
+  for (let i = 0; i < n; i++){
+    const a = Math.random() * Math.PI * 2, s = 40 + Math.random() * 260;
+    particles.push({ x: CX + Math.cos(a) * rad, y: CY + Math.sin(a) * rad,
+      vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: 1, h, sz: 2 + Math.random() * 3 });
+  }
+}
+function popup(big, small, gold){
+  popups.push({ big, small, gold, t: 0 });
+}
+
+/* ---------- Input ---------- */
+cv.addEventListener('pointerdown', e => {
+  // botão de som (canto superior direito)
+  if (e.clientX > W - 60 && e.clientY < 60) { toggleMute(); return; }
+  e.preventDefault(); tap();
+});
+addEventListener('keydown', e => {
+  if (e.repeat) return;
+  if (e.code === 'Space' || e.code === 'Enter' || e.code === 'ArrowUp') { e.preventDefault(); tap(); }
+  if (e.code === 'KeyM') toggleMute();
+});
+function toggleMute(){
+  muted = !muted;
+  try { localStorage.setItem('pulso-mute', muted ? '1' : '0'); } catch(e){}
+}
+
+/* ---------- Loop ---------- */
+let last = performance.now(), demoR = 0;
+function loop(now){
+  const dt = Math.min((now - last) / 1000, 0.05); last = now;
+  update(dt, now); draw(now);
+  requestAnimationFrame(loop);
+}
+
+function update(dt, now){
+  if (state === 'play') {
+    r += dir * speed * dt;
+    if (dir > 0 && r > target + band / 2 + 1) fail();
+    if (dir < 0 && r < target - band / 2 - 1) fail();
+  } else if (state === 'menu') {
+    demoR += MAXR * 0.5 * dt;
+    if (demoR > MAXR * 1.1) demoR = 0;
+  }
+  hueShown += ((((hue - hueShown) % 360) + 540) % 360 - 180) * Math.min(1, dt * 4);
+  for (const p of particles){ p.x += p.vx * dt; p.y += p.vy * dt; p.vx *= 0.96; p.vy *= 0.96; p.life -= dt * 1.4; }
+  particles = particles.filter(p => p.life > 0);
+  for (const g of ghosts){ g.r += MAXR * 0.6 * dt; g.a -= dt * 2.2; }
+  ghosts = ghosts.filter(g => g.a > 0);
+  for (const p of popups) p.t += dt;
+  popups = popups.filter(p => p.t < 0.9);
+  shake = Math.max(0, shake - dt * 60);
+  flash = Math.max(0, flash - dt * 2.5);
+  scorePop = Math.max(0, scorePop - dt * 5);
+}
+
+/* ---------- Desenho ---------- */
+function ring(rad, w, color, glow = 0){
+  if (rad <= 0) return;
+  ctx.beginPath(); ctx.arc(CX, CY, rad, 0, Math.PI * 2);
+  ctx.lineWidth = w; ctx.strokeStyle = color;
+  ctx.shadowBlur = glow; ctx.shadowColor = color;
+  ctx.stroke(); ctx.shadowBlur = 0;
+}
+
+function text(str, x, y, size, color, weight = 800, alpha = 1){
+  ctx.globalAlpha = alpha;
+  ctx.font = `${weight} ${size}px system-ui,-apple-system,"Segoe UI",Roboto,sans-serif`;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillStyle = color; ctx.fillText(str, x, y);
+  ctx.globalAlpha = 1;
+}
+
+function draw(now){
+  const h = hueShown;
+  // fundo
+  const bg = ctx.createRadialGradient(CX, CY, 0, CX, CY, Math.max(W, H) * 0.75);
+  bg.addColorStop(0, `hsl(${h},45%,13%)`);
+  bg.addColorStop(1, `hsl(${h + 40},40%,4%)`);
+  ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
+
+  ctx.save();
+  if (shake > 0) ctx.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake);
+
+  // grelha de guia
+  for (let i = 1; i <= 4; i++) ring(MAXR * i / 4, 1, `hsla(${h},40%,70%,0.06)`);
+
+  if (state === 'play' || state === 'over') {
+    // zona alvo
+    const tc = `hsla(${h},95%,62%,`;
+    ring(target, band, tc + '0.22)');
+    ring(target - band / 2, 2, tc + '0.9)', 12);
+    ring(target + band / 2, 2, tc + '0.9)', 12);
+    ring(target, Math.max(2, band * 0.36), `hsla(${h + 50},100%,75%,0.25)`); // zona perfeita
+  }
+
+  // ecos de acertos
+  for (const g of ghosts) ring(g.r, g.w, `hsla(${g.hue},100%,75%,${g.a})`, 20);
+
+  // anel em movimento
+  if (state === 'play') {
+    ring(r, 4, '#fff', 22);
+  } else if (state === 'over') {
+    ring(failR, 5, 'rgb(255,70,100)', 24);
+  } else {
+    // demo do menu
+    const a = 1 - demoR / (MAXR * 1.1);
+    ring(demoR, 3, `rgba(255,255,255,${0.15 + a * 0.5})`, 16);
+  }
+
+  // núcleo pulsante
+  const pulse = 1 + Math.sin(now / 180) * 0.12;
+  ctx.beginPath(); ctx.arc(CX, CY, 7 * pulse, 0, Math.PI * 2);
+  ctx.fillStyle = `hsl(${h + 30},100%,80%)`; ctx.shadowBlur = 25; ctx.shadowColor = ctx.fillStyle;
+  ctx.fill(); ctx.shadowBlur = 0;
+
+  // partículas
+  for (const p of particles){
+    ctx.globalAlpha = Math.max(0, p.life);
+    ctx.fillStyle = `hsl(${p.h},100%,70%)`;
+    ctx.beginPath(); ctx.arc(p.x, p.y, p.sz * p.life + 0.5, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+
+  const top = Math.max(50, CY - MAXR - 75);
+  const bottom = Math.min(H - 70, CY + MAXR + 35);
+
+  if (state === 'play') {
+    text(String(score), CX, top, 64 + scorePop * 18, '#fff', 900);
+    if (streak > 1) text(`🔥 ${streak} perfeitos seguidos`, CX, top + 48, 15, `hsl(${h + 50},100%,75%)`, 700);
+    for (const p of popups){
+      const k = p.t / 0.9, y = CY - 30 - k * 40, al = 1 - k;
+      if (p.big) text(p.big, CX, y - 22, 26, `hsl(${h + 50},100%,78%)`, 900, al);
+      text(p.small, CX, y + 6, 20, '#fff', 800, al);
+    }
+  }
+
+  if (state === 'menu') {
+    text('PULSO', CX, top, 68, '#fff', 900);
+    text('Toca quando o anel estiver dentro da zona', CX, bottom, 16, 'rgba(255,255,255,0.75)', 500);
+    const blink = 0.55 + Math.sin(now / 300) * 0.45;
+    text('TOCA PARA COMEÇAR', CX, bottom + 32, 18, '#fff', 800, blink);
+    if (best > 0) text(`Recorde: ${best}`, CX, top + 50, 16, `hsl(${h + 50},100%,75%)`, 700);
+  }
+
+  if (state === 'over') {
+    ctx.fillStyle = 'rgba(5,5,12,0.55)'; ctx.fillRect(0, 0, W, H);
+    text('FIM', CX, CY - 90, 26, 'rgba(255,255,255,0.7)', 700);
+    text(String(score), CX, CY - 25, 96, '#fff', 900);
+    text(newBest ? '★ NOVO RECORDE ★' : `Recorde: ${best}`, CX, CY + 45, 18,
+         newBest ? `hsl(${h + 50},100%,72%)` : 'rgba(255,255,255,0.7)', 800);
+    if (now - overAt > 500) {
+      const blink = 0.55 + Math.sin(now / 300) * 0.45;
+      text('TOCA PARA REPETIR', CX, CY + 100, 18, '#fff', 800, blink);
+    }
+  }
+
+  // ecrã de flash
+  if (flash > 0){ ctx.fillStyle = `rgba(${flashColor},${flash * 0.35})`; ctx.fillRect(0, 0, W, H); }
+
+  // botão de som
+  text(muted ? '🔇' : '🔊', W - 30, 30, 20, '#fff', 400, 0.6);
+}
+
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
