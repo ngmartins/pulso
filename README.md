@@ -1,11 +1,11 @@
 # Pulso
 
-Um jogo de um só toque para o browser.
+A one-tap game for the browser.
 
-Um anel cresce a partir do centro: toca (ou carrega em Espaço) quando ele estiver dentro da zona colorida.
-Acerta no centro da zona para fazer **PERFEITO** e encadear sequências que valem mais pontos.
-A zona fica mais estreita e o anel mais rápido a cada acerto.
+A ring grows out from the centre: tap (or press Space) when it is inside the coloured zone.
+Hit the middle of the zone for a **PERFECT** and chain streaks that are worth more points.
+The zone gets narrower and the ring faster with every hit.
 
-**Jogar:** https://ngmartins.github.io/pulso/
+**Play:** https://ngmartins.github.io/pulso/
 
-Tudo num único `index.html`, sem dependências.
+Everything lives in a single `index.html`, with no dependencies.
